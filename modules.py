@@ -353,11 +353,9 @@ class ModulesPackage:
     class ColorTracker:
         """Tracks colors using customizable colorspace and has easy calibration with trackbars"""
         def __init__(self, channel_max_values, channel_names, window_detection_name, \
-                    channel_bounds=None):
+                     channel_bounds):
             self._window_detection_name = window_detection_name
 
-            if not channel_bounds:
-                channel_bounds = [(), (), ()]
             self._num_of_channels = 3
             self._channels = {}
             for i in range(self._num_of_channels):
