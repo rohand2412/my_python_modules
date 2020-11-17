@@ -209,23 +209,13 @@ class ModulesPackage:
 
     class Frame:
         """Keeps track of all data regarding the video stream"""
-        def __init__(self, side, name, filename, limit_of_frames=None):
+        def __init__(self, name):
             self._width = 640
             self._height = 480
             self._camera = PiVideoStream(resolution=(self._width, self._height)).start()
             time.sleep(2.0)
             self._name = name
-            self._filename = filename
-            self._side = side
-            self._limit_of_frames = limit_of_frames
-            self._num = 1
-            self._ret = None
             self._frame = None
-
-            if self._limit_of_frames:
-                self._buffer = [None for i in range(self.get_limit_of_frames())]
-            else:
-                self._buffer = []
 
         def capture_frame(self):
             """Reads the frame from the video stream"""
@@ -240,18 +230,10 @@ class ModulesPackage:
 
         def update(self):
             """Checks certain break conditions and updates certain variables"""
-            if self._limit_of_frames:
-                if self._num >= self._limit_of_frames:
-                    raise ModulesPackage.Break
-            self._num += 1
 
         def get_name(self):
             """Returns name of the camera"""
             return self._name
-
-        def get_filename(self):
-            """Returns filename for saving frames"""
-            return self._filename
 
         def get_camera(self):
             """Returns video stream object"""
@@ -264,18 +246,6 @@ class ModulesPackage:
         def get_height(self):
             """Returns raw height of frame"""
             return self._height
-
-        def get_side(self):
-            """Returns cropped square side length"""
-            return self._side
-
-        def get_limit_of_frames(self):
-            """Returns limit of frames for the video stream"""
-            return self._limit_of_frames
-
-        def get_num(self):
-            """Returns running number of current frames"""
-            return self._num
 
     class Keyboard:
         def __init__(self):
