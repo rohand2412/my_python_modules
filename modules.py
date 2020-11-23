@@ -5,15 +5,18 @@ import os
 import datetime
 import time
 import copy
+import queue
 import numpy as np
 import cv2
 from imutils.video.pivideostream import PiVideoStream
 import pynput
 
-KEYBOARD_BUFFER_INDEX_OF_VAL = 0
-
 class ModulesPackage:
     """Contains basic framework of all modules utilized in this directory"""
+    KEYBOARD_PRESSED_ITEM_NAME = "pressed"
+    KEYBOARD_RELEASED_ITEM_NAME = "released"
+    READDIR_SLIDESHOW_MODE_KEYBOARD = "keyboard"
+    READDIR_SLIDESHOW_MODE_DELAY = "delay"
 
     @staticmethod
     def check_for_quit_request():
@@ -79,8 +82,8 @@ class ModulesPackage:
                     self._text = None
 
                 def calculate(self, names, nums):
-                    """Calculates data on the most recent directory from the names and numbers of all of
-                    them"""
+                    """Calculates data on the most recent directory from the names and numbers of
+                    all of them"""
                     self._num = np.amax(nums)
                     self._index = int(np.where(nums == self._num)[0])
                     self._name = names[self._index]
@@ -113,16 +116,27 @@ class ModulesPackage:
 
         class ReadDir:
             """Class with methods to read and display from an images directory"""
-            def __init__(self, target_dir):
+            def __init__(self, target_dir, mode, delay=250):
+                self._keyboard = ModulesPackage.Keyboard()
                 self._target_dir = target_dir
+                self._mode = mode
                 self._names = []
                 self._text = None
                 self._ext = None
                 self._images = []
                 self._img_num = 0
                 self._start_delay = None
+                self._delay = delay
+                self._left_key = "left"
+                self._right_key = "right"
+                self._left_key_state = False
+                self._right_key_state = False
+
+                if self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_KEYBOARD:
+                    self._keyboard.start()
 
             def read(self):
+                """Cache or Load and Store the images in the target directory"""
                 self._names = os.listdir(self.get_target_dir())
                 self._text, self._ext = os.path.splitext(self._names[0])
                 self._text = ''.join(filter(str.isalpha, self._text))
@@ -134,32 +148,68 @@ class ModulesPackage:
                 self._images = [None for name in self._names]
                 for i, name in enumerate(self._names):
                     self._images[i] = cv2.imread(self._target_dir+r'/'+name)
-                    self._images[i] = cv2.putText(self._images[i], text=str(i), org = (0, 25),
-                                                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1,
-                                                color= (0, 255, 0), thickness=2, lineType=cv2.LINE_AA)
+                    self._images[i] = cv2.putText(self._images[i], text=str(i), org=(0, 25),
+                                                  fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1,
+                                                  color=(0, 255, 0), thickness=2,
+                                                  lineType=cv2.LINE_AA)
                 self._images = np.array(self._images)
 
             def imshow(self):
-                if not self._start_delay:
+                """Display the image that is next up in the slideshow"""
+                if self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_DELAY:
+                    if not self._start_delay:
+                        cv2.imshow("slideshow", self._images[self._img_num])
+                elif self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_KEYBOARD:
                     cv2.imshow("slideshow", self._images[self._img_num])
 
-            def update(self, delay_ms):
-                if not self._start_delay:
-                    self._img_num += 1
-                    if self._img_num >= len(self._images):
-                        raise ModulesPackage.Break
-                    self._start_delay = datetime.datetime.now()
-                elif (datetime.datetime.now() - self._start_delay).total_seconds() >= (delay_ms/1000.0):
-                    self._start_delay = None
+            def update(self):
+                """Check if delay is completed or if delay needs to be reset"""
+                if self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_DELAY:
+                    if not self._start_delay:
+                        self._img_num += 1
+                        if self._img_num >= len(self._images):
+                            raise ModulesPackage.Break
+                        self._start_delay = datetime.datetime.now()
+                    elif (datetime.datetime.now() - self._start_delay).total_seconds() >= (self._delay/1000.0):
+                        self._start_delay = None
+                elif self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_KEYBOARD:
+                    while not self._keyboard.get_events().empty():
+                        event = self._keyboard.get_events().get()
+                        if event.get_name() == ModulesPackage.KEYBOARD_PRESSED_ITEM_NAME:
+                            if event.get_key() == self._left_key:
+                                self._left_key_state = True
+                            elif event.get_key() == self._right_key:
+                                self._right_key_state = True
+                        elif event.get_name() == ModulesPackage.KEYBOARD_RELEASED_ITEM_NAME:
+                            if event.get_key() == self._left_key:
+                                self._left_key_state = False
+                            elif event.get_key() == self._right_key:
+                                self._right_key_state = False
+                    if self._left_key_state and self._img_num > 0:
+                        self._img_num -= 1
+                    if self._right_key_state and self._img_num < (len(self._images) - 1):
+                        self._img_num += 1
+
+            def close(self):
+                """Deactivates keyboard if necessary"""
+                if self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_KEYBOARD:
+                    self._keyboard.stop()
 
             def get_target_dir(self):
+                """Return name of target directory"""
                 return self._target_dir
 
             def get_names(self):
+                """Return image filenames"""
                 return self._names
-            
+
             def get_images(self):
+                """Return images in the target directory"""
                 return self._images
+
+            def get_mode(self):
+                """Returns mode of image slideshow"""
+                return self._mode
 
     class Fps:
         """Computes Fps over a series of frames and their times"""
@@ -248,107 +298,55 @@ class ModulesPackage:
             return self._height
 
     class Keyboard:
-        def __init__(self):
-            self._listener = None
-            self._len_event_buffers = 32
-            self._pressed = self._Buffer(self._len_event_buffers)
-            self._released = self._Buffer(self._len_event_buffers)
+        """Wraps pynput keyboard class and embeds event queue for accesing and organizing key
+        events"""
+        def __init__(self, len_event_buffers=64):
+            self._listener = pynput.keyboard.Listener(on_press=self._on_press,
+                                                      on_release=self._on_release)
+            self._events = queue.Queue(maxsize=len_event_buffers)
 
         def _on_press(self, key):
-            self._pressed.log_events(key)
+            """Callback for when key is pressed"""
+            self._produce(ModulesPackage.KEYBOARD_PRESSED_ITEM_NAME, key)
 
         def _on_release(self, key):
-            self._released.log_events(key)
+            """Callback for when key is released"""
+            self._produce(ModulesPackage.KEYBOARD_RELEASED_ITEM_NAME, key)
 
         def start(self):
-            self._listener = pynput.keyboard.Listener(on_press=self._on_press,
-                                                    on_release=self._on_release)
+            """Starts listening to the keyboard"""
             self._listener.start()
 
         def stop(self):
+            """Stops listening to the keyboard"""
             self._listener.stop()
-        
-        def get_pressed(self):
-            pressed = copy.deepcopy(self._pressed)
-            self._pressed.just_returned_events()
-            return pressed
-        
-        def get_released(self):
-            released = copy.deepcopy(self._released)
-            self._released.just_returned_events()
-            return released
-        
-        def get_len_event_buffers(self):
-            return self._len_event_buffers
 
-        class _Buffer:
-            def __init__(self, len_event_buffers):
-                self._just_returned_events = False
-                self._len_event_buffers = len_event_buffers
-                self._buffer = np.array([None for i in range(self._len_event_buffers)])
-                self._len = 0
-                self._write_index = [0]
-                self._read_index = [0]
-                self._event_count = [0]
+        def _produce(self, name, key):
+            """Produces key into events queue"""
+            self._events.put(self._Item(name, key), block=False)
 
-            def log_events(self, key):
-                if self._event_count[KEYBOARD_BUFFER_INDEX_OF_VAL] == self._len_event_buffers:
-                    while True:
-                        print("[ERROR] BUFFER OVERFLOW")
-                self._buffer[self._write_index[KEYBOARD_BUFFER_INDEX_OF_VAL]] = key
-                self.increment_write_index()
-                print("Logging events")
-                self.increment_event_count()
+        def consume(self):
+            """Consumes keys in the events queue"""
 
-                # if self._just_returned_events:
-                #     self.empty_events()
-                #     self._just_returned_events = False
-                
-                # self._buffer[self._len] = key
-                # if self._len == len(self._buffer)-1:
-                #     self._buffer[0] = None
-                #     self._buffer = np.roll(self._buffer, -1)
-                # else:
-                #     print("Added one more to len -- ", key, end=" -- ")
-                #     print(self._buffer[:5], end=" -- ")
-                #     self._len += 1
-                #     print(self._len, " --ID: ", id(self))
+        def get_events(self):
+            """Returns events queue"""
+            return self._events
 
-            def empty_events(self):
-                self._buffer[:] = None
-                self._len = 0
-                print("ee")
+        class _Item:
+            def __init__(self, name, key):
+                self._name = name
+                self._key = key
 
-            def just_returned_events(self):
-                self._just_returned_events = True
-            
-            def increment_write_index(self):
-                self._write_index[KEYBOARD_BUFFER_INDEX_OF_VAL] = (self._write_index[KEYBOARD_BUFFER_INDEX_OF_VAL] + 1) % self._len_event_buffers
-            
-            def increment_read_index(self):
-                self._read_index[KEYBOARD_BUFFER_INDEX_OF_VAL] = (self._read_index[KEYBOARD_BUFFER_INDEX_OF_VAL] + 1) % self._len_event_buffers
-            
-            def increment_event_count(self):
-                self._event_count[KEYBOARD_BUFFER_INDEX_OF_VAL] += 1
-                print("Incremented event count -- ", self._event_count[KEYBOARD_BUFFER_INDEX_OF_VAL])
-            
-            def decrement_event_count(self):
-                self._event_count[KEYBOARD_BUFFER_INDEX_OF_VAL] -= 1
-            
-            def get_write_index(self):
-                return self._write_index
-            
-            def get_read_index(self):
-                return self._read_index
-            
-            def get_event_count(self):
-                return self._event_count
+            def get_name(self):
+                """Returns name"""
+                return self._name
 
-            def get_buffer(self):
-                return self._buffer
-
-            def get_len(self):
-                return self._len
+            def get_key(self):
+                """Returns name of key enum if special character or key itself if in alphabet"""
+                try:
+                    return self._key.name
+                except AttributeError:
+                    return self._key
 
     class ColorTracker:
         """Tracks colors using customizable colorspace and has easy calibration with trackbars"""
