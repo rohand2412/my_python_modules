@@ -6,6 +6,8 @@ import datetime
 import time
 import copy
 import queue
+import string
+import argparse
 import numpy as np
 import cv2
 from imutils.video.pivideostream import PiVideoStream
@@ -13,8 +15,10 @@ import pynput
 
 class ModulesPackage:
     """Contains basic framework of all modules utilized in this directory"""
-    KEYBOARD_PRESSED_ITEM_NAME = "pressed"
-    KEYBOARD_RELEASED_ITEM_NAME = "released"
+    KEYBOARD_PRESSED_STATE = True
+    KEYBOARD_RELEASED_STATE = False
+    KEYBOARD_ACTION_TYPE_TAP = "tap"
+    KEYBOARD_ACTION_TYPE_HOLD = "hold"
     READDIR_SLIDESHOW_MODE_KEYBOARD = "keyboard"
     READDIR_SLIDESHOW_MODE_DELAY = "delay"
 
@@ -22,10 +26,14 @@ class ModulesPackage:
     def check_for_quit_request():
         """Quits if 'q' key is pressed"""
         if cv2.waitKey(1) & 0xFF == ord('q'):
-            raise ModulesPackage.Break
+            print(end="")
+            raise ModulesPackage.Break()
 
     class Break(Exception):
         """Emulates a break from within a function"""
+
+    class TimerError(Exception):
+        """Used to report errors from Timer class"""
 
     class DirectoryManagement:
         """Manages the directory and has classes to write and read directories"""
@@ -129,8 +137,12 @@ class ModulesPackage:
                 self._delay = delay
                 self._left_key = "left"
                 self._right_key = "right"
-                self._left_key_state = False
-                self._right_key_state = False
+                self._left_key_state = ModulesPackage.KEYBOARD_RELEASED_STATE
+                self._right_key_state = ModulesPackage.KEYBOARD_RELEASED_STATE
+                self._left_key_action_type = None
+                self._right_key_action_type = None
+                self._left_tap_update = False
+                self._right_tap_update = False
 
                 if self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_KEYBOARD:
                     self._keyboard.start()
@@ -175,20 +187,30 @@ class ModulesPackage:
                 elif self._mode == ModulesPackage.READDIR_SLIDESHOW_MODE_KEYBOARD:
                     while not self._keyboard.get_events().empty():
                         event = self._keyboard.get_events().get()
-                        if event.get_name() == ModulesPackage.KEYBOARD_PRESSED_ITEM_NAME:
-                            if event.get_key() == self._left_key:
-                                self._left_key_state = True
-                            elif event.get_key() == self._right_key:
-                                self._right_key_state = True
-                        elif event.get_name() == ModulesPackage.KEYBOARD_RELEASED_ITEM_NAME:
-                            if event.get_key() == self._left_key:
-                                self._left_key_state = False
-                            elif event.get_key() == self._right_key:
-                                self._right_key_state = False
-                    if self._left_key_state and self._img_num > 0:
-                        self._img_num -= 1
-                    if self._right_key_state and self._img_num < (len(self._images) - 1):
-                        self._img_num += 1
+                        if event.get_name() == self._left_key:
+                            self._left_key_state = event.get_state()
+                            self._left_key_action_type = event.get_action_type()
+                        elif event.get_name() == self._right_key:
+                            self._right_key_state = event.get_state()
+                            self._right_key_action_type = event.get_action_type()
+
+                    if self._left_key_state == ModulesPackage.KEYBOARD_PRESSED_STATE and self._img_num > 0:
+                        if self._left_key_action_type == ModulesPackage.KEYBOARD_ACTION_TYPE_TAP and not self._left_tap_update:
+                            self._img_num -= 1
+                            self._left_tap_update = True
+                        elif self._left_key_action_type == ModulesPackage.KEYBOARD_ACTION_TYPE_HOLD:
+                            self._img_num -= 1
+                    elif self._left_key_state == ModulesPackage.KEYBOARD_RELEASED_STATE:
+                        self._left_tap_update = False
+
+                    if self._right_key_state == ModulesPackage.KEYBOARD_PRESSED_STATE and self._img_num < (len(self._images) - 1):
+                        if self._right_key_action_type == ModulesPackage.KEYBOARD_ACTION_TYPE_TAP and not self._right_tap_update:
+                            self._img_num += 1
+                            self._right_tap_update = True
+                        elif self._right_key_action_type == ModulesPackage.KEYBOARD_ACTION_TYPE_HOLD:
+                            self._img_num += 1
+                    elif self._right_key_state == ModulesPackage.KEYBOARD_RELEASED_STATE:
+                        self._right_tap_update = False
 
             def close(self):
                 """Deactivates keyboard if necessary"""
@@ -214,30 +236,27 @@ class ModulesPackage:
     class Fps:
         """Computes Fps over a series of frames and their times"""
         def __init__(self):
+            self._timer = ModulesPackage.Timer()
             self._elapsed_times = np.array([])
             self._ms_to_seconds = 1.0/1000000.0
-            self._start_time = None
-            self._end_time = None
             self._mean = None
-            self._seconds_per_frame = None
             self._fps = None
 
         def open_timer(self):
             """Starts timer that determines the elapsed time"""
-            self._start_time = datetime.datetime.now()
+            self._timer.start()
 
         def close_timer(self):
             """Stops timer that determines the elapsed time"""
-            self._end_time = datetime.datetime.now()
-            self._elapsed_times = np.append(self._elapsed_times, self._end_time - self._start_time)
+            self._timer.stop()
+            self._elapsed_times = np.append(self._elapsed_times, self._timer.get_elapsed_time())
             return self._elapsed_times[-1]
 
         def calculate(self):
             """Calculates the fps based upon a series of stats"""
             self._elapsed_times = np.delete(self._elapsed_times, [0])
             self._mean = np.mean(self._elapsed_times)
-            self._seconds_per_frame = self._mean.microseconds * self._ms_to_seconds
-            self._fps = 1.0/self._seconds_per_frame
+            self._fps = 1.0/self._mean
 
         def print_fps(self):
             """Prints out just fps"""
@@ -246,16 +265,30 @@ class ModulesPackage:
         def debug(self, debug):
             """Prints out values of all variables for debugging"""
             if debug:
-                print("startTime: " + str(self._start_time))
-                print("endTime: " + str(self._end_time))
                 print("elapsedTimes: " + str(self._elapsed_times))
                 print("mean: " + str(self._mean))
-                print("secondsPerFrame: " + str(self._seconds_per_frame))
                 print("fps: " + str(self._fps))
+                self._timer.debug(debug)
 
         def get_fps(self):
             """Returns fps"""
             return self._fps
+
+        def time_this(self):
+            """Returns an automated timer context manager for usage in 'with' statements"""
+            return self._AutomatedTiming(self.open_timer, self.close_timer)
+
+        class _AutomatedTiming:
+            """Context Manager that can be used without redefining class instance"""
+            def __init__(self, enter_func, exit_func):
+                self._enter = enter_func
+                self._exit = exit_func
+
+            def __enter__(self):
+                self._enter()
+
+            def __exit__(self, exc_type, exc_value, exc_traceback):
+                self._exit()
 
     class Frame:
         """Keeps track of all data regarding the video stream"""
@@ -265,7 +298,7 @@ class ModulesPackage:
             self._camera = PiVideoStream(resolution=(self._width, self._height)).start()
             time.sleep(2.0)
             self._name = name
-            self._frame = None
+            self._frame = np.array([])
 
         def capture_frame(self):
             """Reads the frame from the video stream"""
@@ -304,14 +337,15 @@ class ModulesPackage:
             self._listener = pynput.keyboard.Listener(on_press=self._on_press,
                                                       on_release=self._on_release)
             self._events = queue.Queue(maxsize=len_event_buffers)
+            self._keys = {key_name: self._Key(key_name) for key_name in self.get_key_names()}
 
         def _on_press(self, key):
             """Callback for when key is pressed"""
-            self._produce(ModulesPackage.KEYBOARD_PRESSED_ITEM_NAME, key)
+            self._produce(ModulesPackage.KEYBOARD_PRESSED_STATE, key)
 
         def _on_release(self, key):
             """Callback for when key is released"""
-            self._produce(ModulesPackage.KEYBOARD_RELEASED_ITEM_NAME, key)
+            self._produce(ModulesPackage.KEYBOARD_RELEASED_STATE, key)
 
         def start(self):
             """Starts listening to the keyboard"""
@@ -321,32 +355,160 @@ class ModulesPackage:
             """Stops listening to the keyboard"""
             self._listener.stop()
 
-        def _produce(self, name, key):
+        def _produce(self, state, key):
             """Produces key into events queue"""
-            self._events.put(self._Item(name, key), block=False)
+            key_name = self._Key.name(key)
+            self._keys[key_name].set_state(state)
+            self._events.put(self._keys[key_name], block=False)
 
         def consume(self):
             """Consumes keys in the events queue"""
+
+        @staticmethod
+        def get_key_names():
+            """Returns string list of all key names including both special keys and letter keys"""
+            key_data = list(pynput.keyboard.Key.__dict__.values())
+            key_names = np.array([])
+            for data in key_data:
+                if isinstance(data, list):
+                    special_keys = np.array(data)
+                    lowercase_alphabet = np.array(list(string.ascii_lowercase),
+                                                  dtype=special_keys.dtype)
+                    key_names = np.concatenate((special_keys, lowercase_alphabet))
+                    break
+            return key_names
 
         def get_events(self):
             """Returns events queue"""
             return self._events
 
-        class _Item:
-            def __init__(self, name, key):
+        class _Key:
+            def __init__(self, name):
+                self._state = False
                 self._name = name
-                self._key = key
+                self._timer = ModulesPackage.Timer()
 
-            def get_name(self):
-                """Returns name"""
-                return self._name
-
-            def get_key(self):
+            @staticmethod
+            def name(key):
                 """Returns name of key enum if special character or key itself if in alphabet"""
                 try:
-                    return self._key.name
+                    return key.name
                 except AttributeError:
-                    return self._key
+                    return key.char
+
+            def set_state(self, state):
+                """Sets the state of the key and start and stop the timer"""
+                if self._state != state:
+                    self._state = state
+                    if self._state == ModulesPackage.KEYBOARD_PRESSED_STATE:
+                        self._timer.start()
+                    elif self._state == ModulesPackage.KEYBOARD_RELEASED_STATE:
+                        self._timer.stop()
+
+            def debug(self, debug):
+                """Prints out all stored data for debugging"""
+                if debug:
+                    print("state: ", self._state)
+                    print("name: ", self._name)
+                    self._timer.debug(debug)
+
+            def get_action_type(self):
+                """Classify key action as 'tap' or 'hold' based on press duration"""
+                tap_duration = 0.15
+                elapsed_time = self.get_elapsed_time()
+                if elapsed_time <= tap_duration:
+                    return ModulesPackage.KEYBOARD_ACTION_TYPE_TAP
+                else:
+                    return ModulesPackage.KEYBOARD_ACTION_TYPE_HOLD
+
+            def get_elapsed_time(self):
+                """Wraps Timer class' get_elapsed_time method"""
+                return self._timer.get_elapsed_time()
+
+            def get_state(self):
+                """Returns state of key"""
+                return self._state
+
+            def get_name(self):
+                """Returns name of key"""
+                return self._name
+
+    class Timer:
+        """Monitors time to provide elapsed time or activate a callback"""
+        def __init__(self, callback=None, delay_ms=None):
+            self._start_time = None
+            self._elapsed_time = None
+            self._callback = callback
+            self._delay_ms = delay_ms
+
+        def start(self):
+            """Starts Timer"""
+            if self._start_time is not None:
+                raise ModulesPackage.TimerError(f"Timer is already running. Use .stop() to stop it")
+
+            self._start_time = time.perf_counter()
+
+        def stop(self):
+            """Stops Timer"""
+            if self._start_time is None:
+                raise ModulesPackage.TimerError(f"Timer is not already running. Use .start() to \
+                                                start it")
+
+            self._elapsed_time = time.perf_counter() - self._start_time
+            self._start_time = None
+
+        def get_elapsed_time(self):
+            """Calculates elapsed time if timer is running or provides already defined value"""
+            if self._start_time is not None:
+                return time.perf_counter() - self._start_time
+            else:
+                return self._elapsed_time
+
+        def update(self):
+            """Activates callback and resets timer if specified amount of time has passed"""
+            if self._callback is None:
+                raise ModulesPackage.TimerError(f"No callback specified. Please specify in \
+                                                constructor")
+            if self._delay_ms is None:
+                raise ModulesPackage.TimerError(f"No delay specified. Please specify in \
+                                                constructor")
+            if self._start_time is None:
+                raise ModulesPackage.TimerError(f"Timer is not already running. Cannot check \
+                                                elapsed time on inactive Timer.Use.start() to \
+                                                start it ")
+
+            if (time.perf_counter() - self._start_time) >= (self._delay_ms / 1000.0):
+                self.stop()
+                self._callback()
+                return True
+            else:
+                return False
+
+        def debug(self, debug):
+            """Prints out all stored data for debugging"""
+            if debug:
+                print("start_time: ", self._start_time)
+                print("elapsed_time: ", self._elapsed_time)
+                print("delay_ms: ", self._delay_ms)
+                print("callback: ", self._callback)
+
+    class InitBashArgs:
+        """Initalizes the arguements present for bash execution which will be different for each
+        application of this wrapper"""
+        @classmethod
+        def __init__(cls):
+            cls._parser = argparse.ArgumentParser()
+            cls.get_arg_params()
+            cls._args = cls._parser.parse_args()
+
+        @classmethod
+        def get_arg_params(cls):
+            """Returns the argument paramters"""
+
+        @classmethod
+        def get_args(cls):
+            """Returns data inputted from bash"""
+            return cls._args
 
     class ColorTracker:
         """Tracks colors using customizable colorspace and has easy calibration with trackbars"""
